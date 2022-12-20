@@ -1,6 +1,6 @@
 # untrack these files
 *.pyc
-.DS_Store/*
+.DS_Store
 examples/*
 dat/*
 doc/*
