@@ -1,0 +1,10 @@
+# untrack these files
+*.pyc
+.DS_Store/*
+examples/*
+dat/*
+doc/*
+exp/*
+Publications/*
+submission_1_code/*
+src.egg-info/*
