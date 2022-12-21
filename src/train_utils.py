@@ -85,9 +85,8 @@ class Logger:
 
     def save_history(self, df_history):
         if self.cp_history is not None:
-            df_history["epoch"] += self.cp_history["epoch"].values[-1] + 1
             df_history["time"] += self.cp_history["time"].values[-1]
-            df_history = pd.concat([self.cp_history, df_history], axis=0)
+            df_history = pd.concat([self.cp_history, df_history], axis=0).reset_index(drop=True)
 
         df_history.to_csv(os.path.join(self.save_path, "history.csv"), index=False)
         fig, _ = plot_history(df_history, plot_keys=self.plot_keys)

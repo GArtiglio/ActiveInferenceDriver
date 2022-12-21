@@ -9,16 +9,17 @@ for seed in 0;
                 --obs_dist norm \
                 --a_cum False \
                 --prior_cov full \
-                --obs_penalty 1 \
+                --bc_penalty 0.5 \
+                --obs_penalty 1. \
                 --prior_penalty $prior_penalty \
-                --cp_path "12-20-2022 12-28-40" \
+                --cp_path "none" \
                 --t_add 3 \
                 --lr 0.01 \
                 --decay 3e-4 \
-                --epochs 40 \
-                --cp_every 20 \
+                --epochs 100 \
+                --cp_every 100 \
                 --verbose 1 \
-                --save False \
+                --save True \
                 --seed $seed
             done
     done

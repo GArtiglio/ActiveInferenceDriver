@@ -4,9 +4,23 @@ import torch.nn.functional as F
 import torch.distributions as torch_dist
 from src.distributions import rectify
 from src.distributions import poisson_pdf, kl_divergence
+from src.distributions import SimpleTransformedModule, BatchNormTransform
 
 class ActiveInference(nn.Module):
+    """ Implementation of active inference based on  
+        Active inference: a process theory, Friston et al., 2017
+        Modified with QMDP planning
+        Currently only support one continuous observation dimension
+    """
     def __init__(self, state_dim, act_dim, horizon, obs_dist="norm", a_cum=False):
+        """
+        Args:
+            state_dim (int): agent hidden state dimension
+            act_dim (int): agent action dimension
+            horizon (int): agent max planning horizon
+            obs_dist (str): observation dist type. Choices=["norm", "lognorm"]
+            a_cum (bool): whether to use cumulative obs mean parameterization. Default=False
+        """
         super().__init__()
         assert obs_dist in ["norm", "lognorm"]
         self.state_dim = state_dim
@@ -29,6 +43,9 @@ class ActiveInference(nn.Module):
             self.C_params, self.D_params, 
             self.tau_params, self.beta_params
         ]
+        
+        # batchnorm for observations
+        self.bn = BatchNormTransform(1, affine=False, update_stats=True)
 
     def __repr__(self):
         s = "{}(state_dim={}, act_dim={}, horizon={}, obs_dist={}, a_cum={})".format(
@@ -78,6 +95,8 @@ class ActiveInference(nn.Module):
             dist = torch_dist.Normal(A_mean, A_std)
         else:
             raise ValueError
+
+        dist = SimpleTransformedModule(dist, [self.bn])
         return dist
     
     def get_poisson_rate(self, tau):
@@ -148,7 +167,7 @@ class ActiveInference(nn.Module):
             else:
                 pi[t] = self.compute_policy(b[t], q, tau, beta[t])
             b[t+1], logp_o[t] = self.update_belief(b[t], a[t], o[t], A, B)
-            beta[t+1] = self.update_beta(beta[t], b[t+1], b[t], q)
+            beta[t+1] = self.update_beta(beta0, b[t+1], b[t], q)
         
         pi = torch.stack(pi)
         b = torch.stack(b[:-1])
@@ -194,8 +213,8 @@ class ActiveInference(nn.Module):
         """
         v = torch.logsumexp(torch.einsum("hnki, ni -> hnk", q, b), dim=-1)
         v_last = torch.logsumexp(torch.einsum("hnki, ni -> hnk", q, b_last), dim=-1)
-        beta_next = beta + (v - v_last)
-        return beta_next
+        beta_next = beta - (v - v_last)
+        return beta_next.clip(1e-6, 1e6)
 
     def compute_policy(self, b, q, tau, beta):
         """ Compute belief-action policy
@@ -209,9 +228,8 @@ class ActiveInference(nn.Module):
         Returns:
             pi (torch.tensor): policy distribution. size=[batch_size, act_dim]
         """
-        beta_ = beta.clip(1e-6, 1e6).unsqueeze(-1)
         q_b = torch.einsum("ni, hnki -> hnk", b, q)
-        pi = torch.softmax(q_b / beta_, dim=-1)
+        pi = torch.softmax(q_b / beta.unsqueeze(-1), dim=-1)
         
         h = poisson_pdf(tau, self.horizon)
         pi = torch.einsum("hnk, nh -> nk", pi, h)

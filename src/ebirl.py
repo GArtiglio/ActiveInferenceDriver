@@ -8,19 +8,22 @@ from src.distributions import rectify
 class EBIRL(nn.Module):
     """ Empirical Bayes inverse reinforcement learning """
     def __init__(self, state_dim, act_dim, horizon, 
-        obs_dist="norm", a_cum=False, prior_cov="full", obs_penalty=1., prior_penalty=1.):
+        obs_dist="norm", a_cum=False, prior_cov="full", 
+        bc_penalty=1., obs_penalty=1., prior_penalty=1.):
         """
         Args:
-            state_dim
-            act_dim
-            horizon
-            obs_dist
-            a_cum
-            prior_cov (str, optional): prior covariance type. Default=full
+            state_dim (int): agent hidden state dimension
+            act_dim (int): agent action dimension
+            horizon (int): agent max planning horizon
+            obs_dist (str): observation dist type. Choices=["norm", "lognorm"]
+            a_cum (bool): whether to use cumulative obs mean parameterization. Default=False
+            prior_cov (str, optional): prior covariance type. Choices=["full", "diag"]
+            bc_penalty (float): prior bc penalty. Default=1.
             obs_penalty (float): prior obs penalty. Default=1.
             prior_penalty (float): prior likelihood penalty. Default=1.
         """
         super().__init__()
+        self.bc_penalty = bc_penalty
         self.obs_penalty = obs_penalty
         self.prior_penalty = prior_penalty
 
@@ -31,14 +34,28 @@ class EBIRL(nn.Module):
         self.prior = FlowMVN(
             num_params, cov=prior_cov, lv0=-2., use_bn=False
         )
-        self.plot_keys = ["total_loss", "act_loss", "obs_loss", "prior_logp", "prior_ent"]
+        self.plot_keys = ["total_loss", "act_loss", "obs_loss", "prior_logp", "post_ent"]
         
     def get_stdout(self, stats):
-        s = "total_loss: {:.4f}, act_loss: {:.4f}, obs_loss: {:.4f}, prior_logp: {:.4f}, prior_ent: {:.4f}".format(
-            stats['total_loss'], stats['act_loss'], stats['obs_loss'], stats["prior_logp"], stats["prior_ent"]
+        s = "total_loss: {:.4f}, act_loss: {:.4f}, obs_loss: {:.4f}, prior_logp: {:.4f}, post_ent: {:.4f}".format(
+            stats['total_loss'], stats['act_loss'], stats['obs_loss'], stats["prior_logp"], stats["post_ent"]
         )
         return s
     
+    def init_prior(self, obs_mean, obs_std):
+        """ Initialize observation means and stds in prior """
+        assert self.agent.a_cum == False
+        A_mu = torch.rand(1, self.agent.state_dim).uniform_(obs_mean - obs_std, obs_mean + obs_std)
+        A_std = torch.rand(1, self.agent.state_dim).normal_(obs_std, 0.01).log()
+        A = torch.cat([A_mu, A_std], dim=-1)
+        
+        self.q_mu[:, :self.agent.state_dim*2].data *= 0
+        self.q_mu[:, :self.agent.state_dim*2].data += A
+        
+        if self.prior.use_bn == False:
+            self.prior.mu[:, :self.agent.state_dim*2].data *= 0
+            self.prior.mu[:, :self.agent.state_dim*2].data += A
+
     def init_q(self, batch_size, freeze_prior=False):
         """ Initialize variational distributions """
         prior_mu = self.prior.mu.data.clone()
@@ -62,10 +79,10 @@ class EBIRL(nn.Module):
         theta_prior = torch.repeat_interleave(theta_prior, o.shape[1], dim=0)
 
         out = self.agent.forward(o, a, theta_prior, detach=True)
-        _, act_stats = self.agent.compute_act_loss(o, a, out, mask)
+        act_loss, act_stats = self.agent.compute_act_loss(o, a, out, mask)
         obs_loss, obs_stats = self.agent.compute_obs_loss(o, a, out, mask)
         
-        loss = self.obs_penalty * obs_loss.mean()
+        loss = self.bc_penalty * act_loss.mean() + self.obs_penalty * obs_loss.mean()
         
         stats = {
             "total_loss": loss.data.item(),
@@ -86,10 +103,10 @@ class EBIRL(nn.Module):
         loss = torch.mean(act_loss + self.prior_penalty * (-prior_logp - q_ent))
         
         stats = {
-            "total_loss": loss.data.item(),
+            "post_total_loss": loss.data.item(),
             **act_stats, **obs_stats,
             "prior_logp": prior_logp.data.mean().item(),
-            "prior_ent": q_ent.data.mean().item()
+            "post_ent": q_ent.data.mean().item()
         }
         return loss, stats
     
@@ -100,6 +117,7 @@ class EBIRL(nn.Module):
 
         prior_stats = {f"prior_{k}":v for (k, v) in prior_stats.items()}
         stats = {
+            "total_loss": loss.data.item(),
             **post_stats, **prior_stats
         }
         return loss, stats

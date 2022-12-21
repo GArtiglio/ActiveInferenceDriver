@@ -25,11 +25,12 @@ def parse_args():
     parser.add_argument("--a_cum", type=bool_, default=False, help="whether to use cumulative parameterization for obs mean, default=False")
     # prior args
     parser.add_argument("--prior_cov", type=str, choices=["diag", "full"], default="full", help="prior covariance type, default=full")
-    parser.add_argument("--obs_penalty", type=float, default=1., help="observation likelihood penalty, default=0.")
-    parser.add_argument("--prior_penalty", type=float, default=1., help="prior penalty, default=1.")
+    parser.add_argument("--bc_penalty", type=float, default=1., help="prior behavior cloning penalty, default=1.")
+    parser.add_argument("--obs_penalty", type=float, default=1., help="observation likelihood penalty, default=1.")
+    parser.add_argument("--prior_penalty", type=float, default=1., help="prior kl penalty, default=1.")
     # train args
     parser.add_argument("--cp_path", type=str, default="none", help="checkpoint path, default=none")
-    parser.add_argument("--t_add", type=int, default=3, help="additional time steps for training, default=3")
+    parser.add_argument("--t_add", type=int, default=3, help="additional braking time steps for training, default=3")
     parser.add_argument("--lr", type=float, default=0.01)
     parser.add_argument("--decay", type=float, default=0.)
     parser.add_argument("--epochs", type=int, default=100)
@@ -62,17 +63,19 @@ def main(arglist):
     act_dim = 2
     model = EBIRL(
         arglist.state_dim, act_dim, arglist.horizon, 
-        obs_dist=arglist.obs_dist, a_cum=arglist.a_cum, prior_cov=arglist.prior_cov, 
+        obs_dist=arglist.obs_dist, a_cum=arglist.a_cum, 
+        prior_cov=arglist.prior_cov, bc_penalty=arglist.bc_penalty, 
         obs_penalty=arglist.obs_penalty, prior_penalty=arglist.prior_penalty
     )
+    model.init_q(batch_size, freeze_prior=False)
     print(model)
         
     # init loss function
-    model.init_q(batch_size, freeze_prior=False)
     loss_fn = lambda m, o, a, mask: m.compute_loss(o, a, mask)
     optimizer = torch.optim.AdamW(model.parameters(), lr=arglist.lr, weight_decay=arglist.decay)
     
     # load pretrained prior
+    cp_history = None
     if arglist.cp_path != "none":
         cp_path = os.path.join(arglist.exp_path, arglist.cp_path)
         cp_model_path = glob.glob(os.path.join(cp_path, "models/*.pt"))
