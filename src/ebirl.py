@@ -7,16 +7,13 @@ from src.distributions import rectify
 
 class EBIRL(nn.Module):
     """ Empirical Bayes inverse reinforcement learning """
-    def __init__(self, state_dim, act_dim, horizon, 
-        obs_dist="norm", a_cum=False, prior_cov="full", 
+    def __init__(self, state_dim, act_dim, horizon, prior_cov="full", 
         bc_penalty=1., obs_penalty=1., prior_penalty=1.):
         """
         Args:
             state_dim (int): agent hidden state dimension
             act_dim (int): agent action dimension
             horizon (int): agent max planning horizon
-            obs_dist (str): observation dist type. Choices=["norm", "lognorm"]
-            a_cum (bool): whether to use cumulative obs mean parameterization. Default=False
             prior_cov (str, optional): prior covariance type. Choices=["full", "diag"]
             bc_penalty (float): prior bc penalty. Default=1.
             obs_penalty (float): prior obs penalty. Default=1.
@@ -28,13 +25,15 @@ class EBIRL(nn.Module):
         self.prior_penalty = prior_penalty
 
         self.agent = ActiveInference(
-            state_dim, act_dim, horizon, obs_dist=obs_dist, a_cum=a_cum
+            state_dim, act_dim, horizon
         )
         num_params = sum(self.agent.num_params)
         self.prior = FlowMVN(
             num_params, cov=prior_cov, lv0=-2., use_bn=False
         )
         self.plot_keys = ["total_loss", "act_loss", "obs_loss", "prior_logp", "post_ent"]
+
+        self.init_params()
         
     def get_stdout(self, stats):
         s = "total_loss: {:.4f}, act_loss: {:.4f}, obs_loss: {:.4f}, prior_logp: {:.4f}, post_ent: {:.4f}".format(
@@ -42,19 +41,20 @@ class EBIRL(nn.Module):
         )
         return s
     
-    def init_prior(self, obs_mean, obs_std):
-        """ Initialize observation means and stds in prior """
-        assert self.agent.a_cum == False
-        A_mu = torch.rand(1, self.agent.state_dim).uniform_(obs_mean - obs_std, obs_mean + obs_std)
-        A_std = torch.rand(1, self.agent.state_dim).normal_(obs_std, 0.01).log()
-        A = torch.cat([A_mu, A_std], dim=-1)
+    def init_params(self):
+        """ sparse and identity initialization """
+        state_dim = self.agent.state_dim
+        act_dim = self.agent.act_dim
+
+        A_mean = torch.linspace(-1, 1, state_dim)
+        A_log_std = torch.log(torch.ones(state_dim) / state_dim)
+        B = torch.eye(state_dim).unsqueeze(0).repeat_interleave(act_dim, 0).flatten()
+        C = torch.zeros(state_dim)
+        D = torch.zeros(state_dim)
+        tau = torch.zeros(1)
         
-        self.q_mu[:, :self.agent.state_dim*2].data *= 0
-        self.q_mu[:, :self.agent.state_dim*2].data += A
-        
-        if self.prior.use_bn == False:
-            self.prior.mu[:, :self.agent.state_dim*2].data *= 0
-            self.prior.mu[:, :self.agent.state_dim*2].data += A
+        params = torch.cat([A_mean, A_log_std, B, C, D, tau], dim=-1).unsqueeze(0)
+        self.prior.mu.data = params
 
     def init_q(self, batch_size, freeze_prior=False):
         """ Initialize variational distributions """
@@ -138,12 +138,12 @@ if __name__ == "__main__":
     mask = torch.randint(0, 2, (T, batch_size))
 
     model = EBIRL(
-        state_dim, act_dim, horizon, obs_dist="norm", prior_cov="full", 
+        state_dim, act_dim, horizon,
         obs_penalty=obs_penalty, prior_penalty=prior_penalty
     )
     model.init_q(batch_size, freeze_prior=False)
     print(model)
-    loss, stats = model.compute_marginal_loss(o, a, mask)
+    loss, stats = model.compute_loss(o, a, mask)
     loss.backward()
     
     # grad check

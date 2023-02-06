@@ -1,14 +1,14 @@
 import argparse
 import os
 import glob
+import pickle
 import numpy as np
 import pandas as pd
 
 import torch
-from torch.utils.data import DataLoader
 
 from src.ebirl import EBIRL
-from src.data import DriverDataset, pad_collate
+from src.data import pad_collate
 from src.train_utils import train, Logger
 
 def parse_args():
@@ -16,13 +16,11 @@ def parse_args():
     
     parser = argparse.ArgumentParser()
     # data args
-    parser.add_argument("--data_path", type=str, default="../dat/processed", help="data path, default=../dat/processed")
+    parser.add_argument("--data_path", type=str, default="../../data", help="data path, default=../../data")
     parser.add_argument("--exp_path", type=str, default="../exp", help="experiment path, default=../exp")
     # agent args
     parser.add_argument("--state_dim", type=int, default=2, help="agent state dimension, default=2")
-    parser.add_argument("--horizon", type=int, default=35, help="agent max plan horizon, default=35")
-    parser.add_argument("--obs_dist", type=str, choices=["lognorm", "norm"])
-    parser.add_argument("--a_cum", type=bool_, default=False, help="whether to use cumulative parameterization for obs mean, default=False")
+    parser.add_argument("--horizon", type=int, default=30, help="agent max plan horizon, default=30")
     # prior args
     parser.add_argument("--prior_cov", type=str, choices=["diag", "full"], default="full", help="prior covariance type, default=full")
     parser.add_argument("--bc_penalty", type=float, default=1., help="prior behavior cloning penalty, default=1.")
@@ -30,7 +28,6 @@ def parse_args():
     parser.add_argument("--prior_penalty", type=float, default=1., help="prior kl penalty, default=1.")
     # train args
     parser.add_argument("--cp_path", type=str, default="none", help="checkpoint path, default=none")
-    parser.add_argument("--t_add", type=int, default=3, help="additional braking time steps for training, default=3")
     parser.add_argument("--lr", type=float, default=0.01)
     parser.add_argument("--decay", type=float, default=0.)
     parser.add_argument("--epochs", type=int, default=100)
@@ -39,45 +36,59 @@ def parse_args():
     parser.add_argument("--save", type=bool_, default=True)
     parser.add_argument("--seed", type=int, default=0)
     arglist = parser.parse_args()
+    arglist = vars(arglist)
     return arglist
 
 def main(arglist):
-    np.random.seed(arglist.seed)
-    torch.manual_seed(arglist.seed)
+    np.random.seed(arglist["seed"])
+    torch.manual_seed(arglist["seed"])
     print(f"learning with args: {arglist}\n")
     
     # load data
-    file_path = os.path.join(arglist.data_path, "processed_data.csv")
-    df = pd.read_csv(file_path)
+    with open(os.path.join(arglist["data_path"], "data.p"), "rb") as f:
+        data = pickle.load(f)
+    
+    # parse data
+    data = [
+        {
+            k: torch.from_numpy(v).to(torch.float32) 
+            for k, v in d.items() if k not in ["drive_id", "t"]
+        } for d in data
+    ]
+    data, mask = pad_collate(data)
+    
+    # process data
+    nan_mask = mask.clone()
+    nan_mask[mask == 0] = torch.nan
+    obs_np = (nan_mask * data["obs"]).numpy()
+    
+    obs_mean = np.nanmean(obs_np)
+    obs_std = np.nanstd(obs_np)
 
-    dataset = DriverDataset(df, t_add=arglist.t_add)
-    batch_size = len(dataset)
-    loader = DataLoader(
-        dataset, 
-        batch_size=batch_size, 
-        shuffle=False, 
-        collate_fn=pad_collate
-    )
+    obs = (data["obs"] - obs_mean) / obs_std
+    act = data["act"].long()
 
+    data = (obs, act, mask)
+    
     # init model
-    act_dim = 2
+    batch_size = obs.shape[1]
+    act_dim = len(torch.unique(act))
     model = EBIRL(
-        arglist.state_dim, act_dim, arglist.horizon, 
-        obs_dist=arglist.obs_dist, a_cum=arglist.a_cum, 
-        prior_cov=arglist.prior_cov, bc_penalty=arglist.bc_penalty, 
-        obs_penalty=arglist.obs_penalty, prior_penalty=arglist.prior_penalty
+        arglist["state_dim"], act_dim, arglist["horizon"], 
+        prior_cov=arglist["prior_cov"], bc_penalty=arglist["bc_penalty"], 
+        obs_penalty=arglist["obs_penalty"], prior_penalty=arglist["prior_penalty"]
     )
     model.init_q(batch_size, freeze_prior=False)
     print(model)
         
     # init loss function
     loss_fn = lambda m, o, a, mask: m.compute_loss(o, a, mask)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=arglist.lr, weight_decay=arglist.decay)
+    optimizer = torch.optim.Adam(model.parameters(), lr=arglist["lr"], weight_decay=arglist["decay"])
     
     # load pretrained prior
     cp_history = None
-    if arglist.cp_path != "none":
-        cp_path = os.path.join(arglist.exp_path, arglist.cp_path)
+    if arglist["cp_path"] != "none":
+        cp_path = os.path.join(arglist["exp_path"], arglist["cp_path"])
         cp_model_path = glob.glob(os.path.join(cp_path, "models/*.pt"))
         cp_model_path.sort(key=lambda x: int(os.path.basename(x).replace(".pt", "").split("_")[-1]))
         
@@ -90,16 +101,16 @@ def main(arglist):
         print(f"loaded checkpoint from {cp_path}")
     
     callback = None
-    if arglist.save:
+    if arglist["save"]:
         callback = Logger(arglist, model.plot_keys, cp_history) 
 
     # train loop
     model, optimizer, df_history, callback = train(
-        model, loader, loss_fn, optimizer, arglist.epochs, 
-        verbose=arglist.verbose, callback=callback, grad_check=False
+        model, data, loss_fn, optimizer, arglist["epochs"], 
+        verbose=arglist["verbose"], callback=callback, grad_check=False
     )
 
-    if arglist.save:
+    if arglist["save"]:
         callback.save_checkpoint(model, optimizer)
         callback.save_history(df_history)
     return model, df_history
