@@ -65,7 +65,7 @@ class Logger:
 
         # save args
         with open(os.path.join(self.save_path, "args.json"), "w") as f:
-            json.dump(vars(arglist), f)
+            json.dump(arglist, f)
 
         self.cp_every = arglist["cp_every"]
         self.plot_keys = plot_keys

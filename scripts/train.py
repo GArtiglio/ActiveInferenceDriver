@@ -17,7 +17,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     # data args
     parser.add_argument("--data_path", type=str, default="../../data", help="data path, default=../../data")
-    parser.add_argument("--exp_path", type=str, default="../exp", help="experiment path, default=../exp")
+    parser.add_argument("--exp_path", type=str, default="../../exp", help="experiment path, default=../exp")
     # agent args
     parser.add_argument("--state_dim", type=int, default=2, help="agent state dimension, default=2")
     parser.add_argument("--horizon", type=int, default=30, help="agent max plan horizon, default=30")
@@ -25,7 +25,7 @@ def parse_args():
     parser.add_argument("--prior_cov", type=str, choices=["diag", "full"], default="full", help="prior covariance type, default=full")
     parser.add_argument("--bc_penalty", type=float, default=1., help="prior behavior cloning penalty, default=1.")
     parser.add_argument("--obs_penalty", type=float, default=1., help="observation likelihood penalty, default=1.")
-    parser.add_argument("--prior_penalty", type=float, default=1., help="prior kl penalty, default=1.")
+    parser.add_argument("--kl_penalty", type=float, default=1., help="prior kl penalty, default=1.")
     # train args
     parser.add_argument("--cp_path", type=str, default="none", help="checkpoint path, default=none")
     parser.add_argument("--lr", type=float, default=0.01)
@@ -76,7 +76,7 @@ def main(arglist):
     model = EBIRL(
         arglist["state_dim"], act_dim, arglist["horizon"], 
         prior_cov=arglist["prior_cov"], bc_penalty=arglist["bc_penalty"], 
-        obs_penalty=arglist["obs_penalty"], prior_penalty=arglist["prior_penalty"]
+        obs_penalty=arglist["obs_penalty"], kl_penalty=arglist["kl_penalty"]
     )
     model.init_q(batch_size, freeze_prior=False)
     print(model)
@@ -102,6 +102,8 @@ def main(arglist):
     
     callback = None
     if arglist["save"]:
+        if not os.path.exists(arglist["exp_path"]):
+            os.mkdir(arglist["exp_path"])
         callback = Logger(arglist, model.plot_keys, cp_history) 
 
     # train loop

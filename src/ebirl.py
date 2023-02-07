@@ -3,12 +3,12 @@ import torch.nn as nn
 import torch.distributions as torch_dist
 from src.agent import ActiveInference
 from src.distributions import FlowMVN
-from src.distributions import rectify
+from src.distributions import make_cov
 
 class EBIRL(nn.Module):
     """ Empirical Bayes inverse reinforcement learning """
     def __init__(self, state_dim, act_dim, horizon, prior_cov="full", 
-        bc_penalty=1., obs_penalty=1., prior_penalty=1.):
+        bc_penalty=1., obs_penalty=1., kl_penalty=1.):
         """
         Args:
             state_dim (int): agent hidden state dimension
@@ -17,12 +17,12 @@ class EBIRL(nn.Module):
             prior_cov (str, optional): prior covariance type. Choices=["full", "diag"]
             bc_penalty (float): prior bc penalty. Default=1.
             obs_penalty (float): prior obs penalty. Default=1.
-            prior_penalty (float): prior likelihood penalty. Default=1.
+            kl_penalty (float): prior likelihood penalty. Default=1.
         """
         super().__init__()
         self.bc_penalty = bc_penalty
         self.obs_penalty = obs_penalty
-        self.prior_penalty = prior_penalty
+        self.kl_penalty = kl_penalty
 
         self.agent = ActiveInference(
             state_dim, act_dim, horizon
@@ -70,7 +70,10 @@ class EBIRL(nn.Module):
                 p.requires_grad = False
 
     def get_q_dist(self):
-        dist = torch_dist.Normal(self.q_mu, rectify(self.q_lv))
+        batch_size, param_dim = self.q_lv.shape[0], self.q_lv.shape[1]
+        tl = torch.zeros(batch_size, param_dim, param_dim) # dummy covariance
+        L = make_cov(self.q_lv, tl)
+        dist = torch_dist.MultivariateNormal(self.q_mu, scale_tril=L)
         return dist
 
     def compute_prior_loss(self, o, a, mask):
@@ -78,7 +81,7 @@ class EBIRL(nn.Module):
         theta_prior = prior_dist.rsample()
         theta_prior = torch.repeat_interleave(theta_prior, o.shape[1], dim=0)
 
-        out = self.agent.forward(o, a, theta_prior, detach=True)
+        out = self.agent.forward(o, a, theta_prior, detach=False)
         act_loss, act_stats = self.agent.compute_act_loss(o, a, out, mask)
         obs_loss, obs_stats = self.agent.compute_obs_loss(o, a, out, mask)
         
@@ -91,6 +94,7 @@ class EBIRL(nn.Module):
         return loss, stats
 
     def compute_posterior_loss(self, o, a, mask):
+        prior_dist = self.prior.get_distribution_class()
         q_dist = self.get_q_dist()
         theta = q_dist.rsample()
 
@@ -98,13 +102,17 @@ class EBIRL(nn.Module):
         act_loss, act_stats = self.agent.compute_act_loss(o, a, out, mask)
         _, obs_stats = self.agent.compute_obs_loss(o, a, out, mask)
         
-        prior_logp = self.prior.log_prob(theta)
-        q_ent = q_dist.entropy().sum(-1)
-        loss = torch.mean(act_loss + self.prior_penalty * (-prior_logp - q_ent))
+        kl = torch_dist.kl.kl_divergence(q_dist, prior_dist)
+        loss = torch.mean(act_loss + self.kl_penalty * kl)
         
+        with torch.no_grad():
+            prior_logp = self.prior.log_prob(theta)
+            q_ent = q_dist.entropy()
+
         stats = {
             "post_total_loss": loss.data.item(),
             **act_stats, **obs_stats,
+            "kl": kl.data.mean().item(),
             "prior_logp": prior_logp.data.mean().item(),
             "post_ent": q_ent.data.mean().item()
         }
@@ -128,7 +136,7 @@ if __name__ == "__main__":
     act_dim = 3
     horizon = 30
     obs_penalty = 1.
-    prior_penalty = 1.
+    kl_penalty = 1.
     
     # synthetic data
     T = 24
@@ -139,7 +147,7 @@ if __name__ == "__main__":
 
     model = EBIRL(
         state_dim, act_dim, horizon,
-        obs_penalty=obs_penalty, prior_penalty=prior_penalty
+        obs_penalty=obs_penalty, kl_penalty=kl_penalty
     )
     model.init_q(batch_size, freeze_prior=False)
     print(model)
