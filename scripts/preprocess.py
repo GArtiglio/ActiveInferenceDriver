@@ -29,12 +29,24 @@ def main(data_path, save_path, max_xpos, freq, act_type, save):
         df_drive = df_drive.iloc[::freq, :] # down sample
         df_drive = df_drive.assign(drive_id=int(drive_id))
         df_drive = df_drive.loc[df_drive["XPos"] <= max_xpos]
+        df_drive = df_drive.assign(engage_act=df_drive["SimDriverEngaged"].diff().fillna(0))
 
         if act_type == "engage_state":
             df_drive = df_drive.assign(act=df_drive["SimDriverEngaged"])
         else:
-            df_drive = df_drive.assign(act=df_drive["SimDriverEngaged"].diff().fillna(0))
+            df_drive = df_drive.assign(act=df_drive["engage_act"])
+        
+        # compute time since sim driver state change
+        idx_engage_act = list(np.where(df_drive["engage_act"] != 0)[0] + 1)
+        idx_engage_act = [0] + idx_engage_act + [len(df_drive)]
+        
+        time_since_act = []    
+        for i in range(len(idx_engage_act) - 1):
+            counter = np.arange(idx_engage_act[i+1] - idx_engage_act[i])
+            time_since_act.append(counter)
 
+        df_drive = df_drive.assign(time_since_act=np.hstack(time_since_act))
+        
         # handle empty files
         if len(df_drive) > 0:
             # remove initial disengage (handle drive 18)
@@ -47,7 +59,7 @@ def main(data_path, save_path, max_xpos, freq, act_type, save):
             mdp_data = {
                 "drive_id": drive_id,
                 "t": df_drive["Time"].to_numpy().astype(np.float32),
-                "obs": df_drive["long_distance"].to_numpy().astype(np.float32),
+                "obs": df_drive[["long_distance", "time_since_act"]].to_numpy().astype(np.float32),
                 "act": df_drive["act"].to_numpy().astype(int),
             }
             data.append(mdp_data)

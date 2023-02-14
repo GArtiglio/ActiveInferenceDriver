@@ -9,23 +9,25 @@ class ActiveInference(nn.Module):
     """ Implementation of active inference based on  
         Active inference: a process theory, Friston et al., 2017
         Modified with QMDP planning
-        Currently only support one continuous observation dimension
+        observation distributions are independent gaussians
     """
-    def __init__(self, state_dim, act_dim, horizon):
+    def __init__(self, state_dim, act_dim, obs_dim, horizon):
         """
         Args:
             state_dim (int): agent hidden state dimension
             act_dim (int): agent action dimension
+            obs_dim (int): observation dimension
             horizon (int): agent max planning horizon
         """
         super().__init__()
         self.state_dim = state_dim
         self.act_dim = act_dim
+        self.obs_dim = obs_dim
         self.horizon = horizon
         self.eps = 1e-6
 
         # count params
-        self.A_params = state_dim * 2 # observation
+        self.A_params = state_dim * obs_dim * 2 # observation
         self.B_params = act_dim * state_dim ** 2 # transition
         self.C_params = state_dim # target distribution
         self.D_params = state_dim # initial belief
@@ -38,8 +40,8 @@ class ActiveInference(nn.Module):
         ]
 
     def __repr__(self):
-        s = "{}(state_dim={}, act_dim={}, horizon={})".format(
-            self.__class__.__name__, self.state_dim, self.act_dim, self.horizon
+        s = "{}(state_dim={}, act_dim={}, obs_idm={}, horizon={})".format(
+            self.__class__.__name__, self.state_dim, self.act_dim, self.obs_dim, self.horizon
         )
         return s
     
@@ -55,7 +57,8 @@ class ActiveInference(nn.Module):
         theta = torch.split(theta, self.num_params, dim=-1)
 
         A_mean, A_lv = torch.chunk(theta[0], 2, dim=-1) 
-
+        A_mean = A_mean.view(-1, self.state_dim, self.obs_dim)
+        A_lv = A_lv.view(-1, self.state_dim, self.obs_dim)
         A_std = rectify(A_lv)
         A = self.get_obs_dist(A_mean, A_std)
         
@@ -90,7 +93,7 @@ class ActiveInference(nn.Module):
         Returns:
             r (torch.tensor): negative efe reward. size=[batch_size, act_dim, state_dim]
         """
-        ent = A.entropy()
+        ent = A.entropy().sum(-1)
         kl = kl_divergence(B, C.unsqueeze(1))
         eh = torch.einsum("nkij, nj -> nki", B, ent)
         r = -kl - eh
@@ -117,7 +120,7 @@ class ActiveInference(nn.Module):
     def forward(self, o, a, theta, detach=False):
         """
         Args:
-            o (torch.tensor): obs sequence. size=[T, batch_size]
+            o (torch.tensor): obs sequence. size=[T, batch_size, obs_dim]
             a (torch.long): act sequence. size=[T, batch_size]
             theta (torch.tensor). agent params. size=[batch_size, num_params]
 
@@ -153,7 +156,7 @@ class ActiveInference(nn.Module):
         Args:
             b (torch.tensor): current belief vector. size=[batch_size, state_dim]
             a (torch.long): current action. size=[batch_size]
-            o (torch.tensor): next observation. size=[batch_size]
+            o (torch.tensor): next observation. size=[batch_size, obs_dim]
             A (torch.dist): obs distribution object. 
             B (torch.tensor): transition matrix. size=[batch_size, act_dim, state_dim, state_dim]
 
@@ -165,7 +168,7 @@ class ActiveInference(nn.Module):
         s = torch.einsum("nij, ni ->nj", B_a, b)
         
         logp_s = torch.log(s + self.eps)
-        logp_o = A.log_prob(o.unsqueeze(-1))
+        logp_o = A.log_prob(o.unsqueeze(-2)).sum(-1)
         b_next = torch.softmax(logp_s + logp_o, dim=-1)
 
         logp_o = torch.logsumexp(logp_s + logp_o, dim=-1)
@@ -210,15 +213,16 @@ if __name__ == "__main__":
     torch.manual_seed(0)
     state_dim = 10
     act_dim = 3
+    obs_dim = 2
     horizon = 30
     agent = ActiveInference(
-        state_dim, act_dim, horizon
+        state_dim, act_dim, obs_dim, horizon
     )
     
     # synthetic data
     T = 24
     batch_size = 12
-    o = torch.randn(T, batch_size).abs()
+    o = torch.randn(T, batch_size, obs_dim).abs()
     a = torch.randint(0, 2, (T, batch_size))
     mask = torch.randint(0, 2, (T, batch_size))
     theta = nn.Parameter(torch.randn(batch_size, sum(agent.num_params)))

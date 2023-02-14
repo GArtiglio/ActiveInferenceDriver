@@ -7,7 +7,7 @@ from src.distributions import make_cov
 
 class EBIRL(nn.Module):
     """ Empirical Bayes inverse reinforcement learning """
-    def __init__(self, state_dim, act_dim, horizon, prior_cov="full", 
+    def __init__(self, state_dim, act_dim, obs_dim, horizon, prior_cov="full", 
         bc_penalty=1., obs_penalty=1., kl_penalty=1.):
         """
         Args:
@@ -25,15 +25,13 @@ class EBIRL(nn.Module):
         self.kl_penalty = kl_penalty
 
         self.agent = ActiveInference(
-            state_dim, act_dim, horizon
+            state_dim, act_dim, obs_dim, horizon
         )
         num_params = sum(self.agent.num_params)
         self.prior = FlowMVN(
             num_params, cov=prior_cov, lv0=-2., use_bn=False
         )
         self.plot_keys = ["total_loss", "act_loss", "obs_loss", "prior_logp", "post_ent"]
-
-        self.init_params()
         
     def get_stdout(self, stats):
         s = "total_loss: {:.4f}, act_loss: {:.4f}, obs_loss: {:.4f}, prior_logp: {:.4f}, post_ent: {:.4f}".format(
@@ -41,13 +39,15 @@ class EBIRL(nn.Module):
         )
         return s
     
-    def init_params(self):
+    def init_params(self, A_mean):
         """ sparse and identity initialization """
         state_dim = self.agent.state_dim
         act_dim = self.agent.act_dim
+        obs_dim = self.agent.obs_dim
 
-        A_mean = torch.linspace(-1, 1, state_dim)
-        A_log_std = torch.log(torch.ones(state_dim) / state_dim)
+        # A_mean = torch.linspace(-1, 1, state_dim)
+        A_mean = A_mean.flatten()
+        A_log_std = torch.log(torch.ones(state_dim, obs_dim) / state_dim).flatten()
         B = torch.eye(state_dim).unsqueeze(0).repeat_interleave(act_dim, 0).flatten()
         C = torch.zeros(state_dim)
         D = torch.zeros(state_dim)
@@ -81,7 +81,7 @@ class EBIRL(nn.Module):
         theta_prior = prior_dist.rsample()
         theta_prior = torch.repeat_interleave(theta_prior, o.shape[1], dim=0)
 
-        out = self.agent.forward(o, a, theta_prior, detach=False)
+        out = self.agent.forward(o, a, theta_prior, detach=True)
         act_loss, act_stats = self.agent.compute_act_loss(o, a, out, mask)
         obs_loss, obs_stats = self.agent.compute_obs_loss(o, a, out, mask)
         
@@ -134,6 +134,7 @@ if __name__ == "__main__":
     torch.manual_seed(0)
     state_dim = 10
     act_dim = 3
+    obs_dim = 2
     horizon = 30
     obs_penalty = 1.
     kl_penalty = 1.
@@ -141,12 +142,12 @@ if __name__ == "__main__":
     # synthetic data
     T = 24
     batch_size = 64
-    o = torch.randn(T, batch_size).abs()
+    o = torch.randn(T, batch_size, obs_dim).abs()
     a = torch.randint(0, 2, (T, batch_size))
     mask = torch.randint(0, 2, (T, batch_size))
 
     model = EBIRL(
-        state_dim, act_dim, horizon,
+        state_dim, act_dim, obs_dim, horizon,
         obs_penalty=obs_penalty, kl_penalty=kl_penalty
     )
     model.init_q(batch_size, freeze_prior=False)
