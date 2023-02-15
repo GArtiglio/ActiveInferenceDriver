@@ -4,6 +4,7 @@ import glob
 import pickle
 import numpy as np
 import pandas as pd
+from sklearn.cluster import KMeans
 
 import torch
 
@@ -60,24 +61,32 @@ def main(arglist):
     # process data
     nan_mask = mask.clone()
     nan_mask[mask == 0] = torch.nan
-    obs_np = (nan_mask * data["obs"]).numpy()
+    obs_np = (nan_mask.unsqueeze(-1) * data["obs"]).numpy()
     
-    obs_mean = np.nanmean(obs_np)
-    obs_std = np.nanstd(obs_np)
+    obs_mean = np.nanmean(obs_np, axis=(0, 1))
+    obs_std = np.nanstd(obs_np, axis=(0, 1))
 
     obs = (data["obs"] - obs_mean) / obs_std
     act = data["act"].long()
 
     data = (obs, act, mask)
+
+    # compute kmeans obs initialization
+    kmeans_data = obs.flatten(0, 1).numpy() 
+    kmeans_data = kmeans_data[mask.flatten() == 1]
+    kmeans = KMeans(n_clusters=arglist["state_dim"]).fit(kmeans_data)
+    kmeans_centers = torch.from_numpy(kmeans.cluster_centers_).to(torch.float32)
     
     # init model
     batch_size = obs.shape[1]
     act_dim = len(torch.unique(act))
+    obs_dim = obs.shape[-1]
     model = EBIRL(
-        arglist["state_dim"], act_dim, arglist["horizon"], 
+        arglist["state_dim"], act_dim, obs_dim, arglist["horizon"], 
         prior_cov=arglist["prior_cov"], bc_penalty=arglist["bc_penalty"], 
         obs_penalty=arglist["obs_penalty"], kl_penalty=arglist["kl_penalty"]
     )
+    model.init_params(kmeans_centers)
     model.init_q(batch_size, freeze_prior=False)
     print(model)
         
