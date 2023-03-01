@@ -78,10 +78,8 @@ class FlowMVN(nn.Module):
 
         self.mu = nn.Parameter(0.1 * torch.randn(1, dim))
         self.lv = nn.Parameter(lv0 * torch.ones(1, dim))
-
-        # nn.init.xavier_normal_(self.mu)
-        
         self.tl = torch.zeros(1, dim, dim)
+        
         if cov == "full":
             self.tl = nn.Parameter(self.tl)
         

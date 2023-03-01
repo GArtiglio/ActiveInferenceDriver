@@ -6,12 +6,13 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import torch
 
-def train(model, loader, loss_fn, optimizer, epochs, verbose=1, callback=None, grad_check=False):
+def train(model, data, loss_fn, optimizer, epochs, verbose=1, callback=None, grad_check=False):
+    obs, act, mask = data
+    
     history = []
     start_time = time.time()
     for e in range(epochs):
-        pad_batch, mask = next(iter(loader))
-        loss, stats = loss_fn(model, pad_batch["obs"] + 1e-6, pad_batch["act"], mask)
+        loss, stats = loss_fn(model, obs, act, mask)
         loss.backward()
         
         if grad_check:
@@ -54,7 +55,7 @@ def plot_history(df_history, plot_keys=None, figsize=(12, 4)):
 class Logger:
     def __init__(self, arglist, plot_keys, cp_history=None):
         date_time = datetime.datetime.now().strftime("%m-%d-%Y %H-%M-%S")
-        self.save_path = os.path.join(arglist.exp_path, date_time)
+        self.save_path = os.path.join(arglist["exp_path"], date_time)
         self.model_path = os.path.join(self.save_path, "models")
 
         if not os.path.exists(self.save_path):
@@ -64,9 +65,9 @@ class Logger:
 
         # save args
         with open(os.path.join(self.save_path, "args.json"), "w") as f:
-            json.dump(vars(arglist), f)
+            json.dump(arglist, f)
 
-        self.cp_every = arglist.cp_every
+        self.cp_every = arglist["cp_every"]
         self.plot_keys = plot_keys
         self.history = []
         self.cp_history = cp_history
